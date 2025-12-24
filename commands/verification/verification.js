@@ -1,212 +1,218 @@
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, TextInputBuilder, TextInputStyle, ModalBuilder, AttachmentBuilder, PermissionsBitField } = require('discord.js');
-const { CaptchaGenerator } = require('captcha-canvas');
+const {
+    V2ComponentBuilder,
+    EmbedBuilder,
+    PermissionFlagsBits
+} = require('../../structures/v2Components');
+const { PermissionsBitField } = require('discord.js');
 
 module.exports = {
     name: 'verification',
     category: 'verification',
     premium: true,
-    subcommand: ['setup', 'view', 'reset',],
+    subcommand: ['setup', 'view', 'reset'],
     run: async (client, message, args) => {
-        if (!message.member.permissions.has('Administrator')) {
+        const v2 = new V2ComponentBuilder(client);
 
+        const createEmbed = (options) => {
+            const embed = new EmbedBuilder()
+                .setColor(options.color || client.color)
+                .setTimestamp();
+
+            if (options.title) embed.setTitle(options.title);
+            if (options.description) embed.setDescription(options.description);
+            if (options.image) embed.setImage(options.image);
+            if (options.footer) embed.setFooter(options.footer);
+
+            return embed;
+        };
+
+        const sendError = (description) => {
             return message.channel.send({
-      
                 embeds: [
-      
-                    client.util.embed()
-      
-                        .setColor(client.color)
-      
-                        .setDescription(
-      
-                            `${client.emoji.cross} | You must have \`Administrator\` permissions to use this command.`
-      
-                        )
-      
+                    createEmbed({
+                        description: `${client.emoji.cross} | ${description}`
+                    })
                 ]
-      
             });
-      
-        }
-      
-        if (!message.guild.members.me.permissions.has('Administrator')) { 
-      
+        };
+
+        const sendSuccess = (title, description) => {
             return message.channel.send({
-      
                 embeds: [
-      
-                    embed
-      
-                        .setColor(client.color)
-      
-                        .setDescription(
-      
-                            `${client.emoji.cross} | I don't have \`Administrator\` permissions to execute this command.`
-      
-                        )
-      
+                    createEmbed({
+                        title,
+                        description
+                    })
                 ]
-      
-            })
-      
+            });
+        };
+
+        if (!message.member.permissions.has('Administrator')) {
+            return sendError(`You must have \`Administrator\` permissions to use this command.`);
         }
-      
+
+        if (!message.guild.members.me.permissions.has('Administrator')) {
+            return sendError(`I don't have \`Administrator\` permissions to execute this command.`);
+        }
+
         if (!client.util.hasHigher(message.member)) {
-      
-            return message.channel.send({
-      
-                embeds: [
-      
-                    client.util.embed()
-      
-                        .setColor(client.color)
-      
-                        .setDescription(
-      
-                            `${client.emoji.cross} | You must have a higher role than me to use this command.`
-      
-                        )
-      
-                ]
-      
-            })
-      
+            return sendError(`You must have a higher role than me to use this command.`);
         }
-      
+
         try {
             let data = await client.db.get(`verification_${message.guild.id}`) || { channelId: null, verifiedrole: null };
 
             if (!args[0]) {
-                const embed = client.util.embed()
-                    .setColor(0xff0000)
-                    .setTitle('Verification Setup Error')
-                    .setDescription('Please provide a valid option for setting up the verification system.\nValid Options Are: `setup`, `reset`, `view`')
-                    .setTimestamp();
-
-                return message.channel.send({ embeds: [embed] });
+                return message.channel.send({
+                    embeds: [
+                        createEmbed({
+                            color: 0xff0000,
+                            title: 'Verification Setup Error',
+                            description: 'Please provide a valid option for setting up the verification system.\nValid Options Are: `setup`, `reset`, `view`'
+                        })
+                    ]
+                });
             }
 
             const option = args[0]?.toLowerCase();
 
-            // Setup option
             if (option === 'setup') {
-                if (data.channelId || data.verifiedrole) {
-                    const embed = client.util.embed()
-                        .setColor(0xffcc00)
-                        .setTitle('Verification Setup')
-                        .setDescription('The verification system is already set up. Use the `reset` command to clear the existing setup first.')
-                        .setTimestamp();
-
-                    return message.channel.send({ embeds: [embed] });
-                }
-
-                // Create the 'Verified' role if it doesn't exist
-                let verifiedRole = message.guild.roles.cache.find(role => role.name === 'Verified');
-                if (!verifiedRole) {
-                    verifiedRole = await message.guild.roles.create({
-                        name: 'Verified',
-                        permissions: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
-                    });
-                }
-
-                let verificationChannel = await message.guild.channels.create({
-                    name: 'verification',
-                    type: 0, 
-                    permissionOverwrites: [
-                        {
-                            id: message.guild.id,
-                            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages], 
-                        },
-                        {
-                            id: verifiedRole.id,
-                            deny: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages], 
-                        }
+                await handleSetup(client, message, data, v2, createEmbed, sendSuccess);
+            } else if (option === 'reset') {
+                await handleReset(client, message, data, createEmbed);
+            } else if (option === 'view') {
+                await handleView(message, data, createEmbed);
+            } else {
+                return message.channel.send({
+                    embeds: [
+                        createEmbed({
+                            color: 0xff0000,
+                            title: 'Invalid Option',
+                            description: 'Please provide a valid option: `setup`, `reset`, or `view`'
+                        })
                     ]
                 });
-
-                data.channelId = verificationChannel.id;
-                data.verifiedrole = verifiedRole.id;
-                await client.db.set(`verification_${message.guild.id}`, data);
-
-                // Send the setup confirmation
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('start_verification')
-                            .setLabel('Start Verification')
-                            .setStyle(ButtonStyle.Primary)
-                    );
-
-                const embed = client.util.embed()
-                    .setColor(client.color)
-                    .setTitle('Verification Setup')
-                    .setDescription('Click the button below to start the verification process.')
-                    .setImage(client.config.verifybanner)
-                    .setTimestamp();
-
-                await verificationChannel.send({ embeds: [embed], components: [row] });
-                await message.channel.send('Verification channel and role have been set up successfully.');
-            }
-
-            if (option === 'reset') {
-                if(data) {
-                if (data.channelId) {
-                    const oldChannel = message.guild.channels.cache.get(data.channelId);
-                    if (oldChannel) {
-                        await oldChannel.delete();
-                    }
-                }
-
-                 await client.db.delete(`verification_${message.guild.id}`);
-                const embedReset = client.util.embed()
-                    .setColor(client.color)
-                    .setTitle('Verification Reset')
-                    .setDescription('The verification configuration has been successfully reset.')
-                    .setTimestamp();
-
-                return message.channel.send({ embeds: [embedReset] });
-            } else {
-                if (!data.channelId || !data.verifiedrole) {
-                    const embed = client.util.embed()
-                        .setColor(0xffcc00)
-                        .setTitle('Verification Not Set Up')
-                        .setDescription('The verification system has not been set up yet.')
-                        .setTimestamp();
-
-                    return message.channel.send({ embeds: [embed] });
-                }
-            }
-        
-        }
-
-            if (option === 'view') {
-                if (!data.channelId || !data.verifiedrole) {
-                    const embed = client.util.embed()
-                        .setColor(0xffcc00)
-                        .setTitle('Verification Not Set Up')
-                        .setDescription('The verification system has not been set up yet.')
-                        .setTimestamp();
-
-                    return message.channel.send({ embeds: [embed] });
-                }
-
-                const embed = client.util.embed()
-                    .setColor(client.color)
-                    .setTitle('Verification System Details')
-                    .setDescription(`Verification Channel: <#${data.channelId}>\nVerified Role: <@&${data.verifiedrole}>`)
-                    .setTimestamp();
-
-                return message.channel.send({ embeds: [embed] });
             }
 
         } catch (e) {
-            const embedError = client.util.embed()
-                .setColor(client.color)
-                .setTitle('Error Occurred')
-                .setDescription('An error occurred while processing the verification system command.')
-                .setTimestamp();
-
-            return message.channel.send({ embeds: [embedError] });
+            console.error('Verification command error:', e);
+            return message.channel.send({
+                embeds: [
+                    createEmbed({
+                        title: 'Error Occurred',
+                        description: 'An error occurred while processing the verification system command.'
+                    })
+                ]
+            });
         }
     }
 };
+
+async function handleSetup(client, message, data, v2, createEmbed, sendSuccess) {
+    if (data.channelId || data.verifiedrole) {
+        return message.channel.send({
+            embeds: [
+                createEmbed({
+                    color: 0xffcc00,
+                    title: 'Verification Setup',
+                    description: 'The verification system is already set up. Use the `reset` command to clear the existing setup first.'
+                })
+            ]
+        });
+    }
+
+    let verifiedRole = message.guild.roles.cache.find(role => role.name === 'Verified');
+    if (!verifiedRole) {
+        verifiedRole = await message.guild.roles.create({
+            name: 'Verified',
+            permissions: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
+        });
+    }
+
+    let verificationChannel = await message.guild.channels.create({
+        name: 'verification',
+        type: 0,
+        permissionOverwrites: [
+            {
+                id: message.guild.id,
+                allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+            },
+            {
+                id: verifiedRole.id,
+                deny: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+            }
+        ]
+    });
+
+    data.channelId = verificationChannel.id;
+    data.verifiedrole = verifiedRole.id;
+    await client.db.set(`verification_${message.guild.id}`, data);
+
+    const row = v2.createActionRow(
+        v2.createPrimaryButton('start_verification', 'Start Verification')
+    );
+
+    const setupEmbed = createEmbed({
+        title: 'Verification Setup',
+        description: 'Click the button below to start the verification process.',
+        image: client.config.verifybanner
+    });
+
+    await verificationChannel.send({ embeds: [setupEmbed], components: [row] });
+    await sendSuccess('Setup Complete', 'Verification channel and role have been set up successfully.');
+}
+
+async function handleReset(client, message, data, createEmbed) {
+    if (!data || (!data.channelId && !data.verifiedrole)) {
+        return message.channel.send({
+            embeds: [
+                createEmbed({
+                    color: 0xffcc00,
+                    title: 'Verification Not Set Up',
+                    description: 'The verification system has not been set up yet.'
+                })
+            ]
+        });
+    }
+
+    if (data.channelId) {
+        const oldChannel = message.guild.channels.cache.get(data.channelId);
+        if (oldChannel) {
+            await oldChannel.delete().catch(() => null);
+        }
+    }
+
+    await client.db.delete(`verification_${message.guild.id}`);
+
+    return message.channel.send({
+        embeds: [
+            createEmbed({
+                title: 'Verification Reset',
+                description: 'The verification configuration has been successfully reset.'
+            })
+        ]
+    });
+}
+
+async function handleView(message, data, createEmbed) {
+    if (!data.channelId || !data.verifiedrole) {
+        return message.channel.send({
+            embeds: [
+                createEmbed({
+                    color: 0xffcc00,
+                    title: 'Verification Not Set Up',
+                    description: 'The verification system has not been set up yet.'
+                })
+            ]
+        });
+    }
+
+    return message.channel.send({
+        embeds: [
+            createEmbed({
+                title: 'Verification System Details',
+                description: `Verification Channel: <#${data.channelId}>\nVerified Role: <@&${data.verifiedrole}>`
+            })
+        ]
+    });
+}
